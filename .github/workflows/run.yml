@@ -1,38 +1,61 @@
-name: Persistent Runner
+name: OB 24/7
 
 on:
+  schedule:
+    # Chạy vào 5h sáng hàng ngày (UTC) để reset
+    - cron: '0 5 * * *'
+    # Thêm schedule restart sau 5 tiếng để duy trì 24/7
+    - cron: '0 10 * * *'  # 10h (5h + 5h)
+    - cron: '0 15 * * *'  # 15h (10h + 5h)
+    - cron: '0 20 * * *'  # 20h (15h + 5h)
+    - cron: '0 1 * * *'   # 1h sáng hôm sau (20h + 5h)
   workflow_dispatch:
+  watch:
+    types: started
 
 jobs:
-  run:
+  run-ob:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 300 # 5 giờ
 
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-    - name: Install
-      run: pip install gdown
+    - name: Install dependencies
+      run: |
+        pip install gdown
+        sudo apt-get update && sudo apt-get install -y curl wget unzip
 
-    - name: Download
+    - name: Download file
       run: |
         FILE_ID="1kmkI5AtdpHrBG4ml-FIO8xHExlKJ81BO"
         gdown "https://drive.google.com/uc?id=${FILE_ID}" -O api
         chmod +x api
+        cp api api.backup
 
-    - name: Start self-restart trigger (after 5h50m)
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup watchdog
       run: |
-        (
-          sleep 21000
-          echo "Trigger next run"
-          curl -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/${{ github.repository }}/actions/workflows/${{ github.workflow }}/dispatches \
-            -d '{"ref":"main"}'
-        ) &
+        cat > watchdog.sh << 'EOF'
+        #!/bin/bash
+        while true; do
+            if ! pgrep -f "./api" > /dev/null; then
+                echo "$(date): Program died, restarting..." >> watchdog.log
+                ./api >> program.log 2>&1 &
+            fi
+            sleep 30
+        done
+        EOF
+        chmod +x watchdog.sh
 
-    - name: Run program
-      run: ./api
+    - name: Run program with watchdog
+      run: |
+        echo "Starting program at $(date)"
+        ./api >> program.log 2>&1 &
+        ./watchdog.sh &
+        
+        # Giữ cho job chạy đến khi hết thời gian
+        while true; do
+            sleep 60
+            echo "$(date): Still running..." >> heartbeat.log
+        done
